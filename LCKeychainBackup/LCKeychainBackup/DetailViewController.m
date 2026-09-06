@@ -1,4 +1,5 @@
 #import "DetailViewController.h"
+#import "DataEditViewController.h"
 #import "KeychainManager.h"
 
 @interface DetailViewController () <UITableViewDataSource, UITableViewDelegate>
@@ -113,65 +114,133 @@
 
 #pragma mark - Edit
 
-- (void)editKey:(NSString *)key {
-    id origVal = self.display[key];
-    NSString *prefill = [KeychainManager displayStringForValue:origVal];
-    BOOL isData = [origVal isKindOfClass:[NSData class]];
-    BOOL wasBase64 = isData && [prefill hasPrefix:@"base64:"];
-
-    UIAlertController *alert = [UIAlertController
-        alertControllerWithTitle:[NSString stringWithFormat:@"编辑 %@",
-                                  [KeychainManager friendlyNameForKey:key]]
-                         message:isData ? (wasBase64 ? @"二进制数据：请粘贴 base64（可带 base64: 前缀）"
-                                                     : @"文本数据：直接修改")
-                                         : nil
-                  preferredStyle:UIAlertControllerStyleAlert];
-    [alert addTextFieldWithConfigurationHandler:^(UITextField *tf) {
-        tf.text = prefill;
-        tf.clearButtonMode = UITextFieldViewModeWhileEditing;
-    }];
-    [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
-    __weak typeof(self) weakSelf = self;
-    [alert addAction:[UIAlertAction actionWithTitle:@"保存" style:UIAlertActionStyleDefault
-        handler:^(__unused UIAlertAction *a) {
-            [weakSelf saveKey:key text:alert.textFields.firstObject.text ?: @""];
-        }]];
-    [self presentViewController:alert animated:YES completion:nil];
-}
-
-- (void)saveKey:(NSString *)key text:(NSString *)text {
-    id newVal;
-    id origVal = self.display[key];
-    if ([origVal isKindOfClass:[NSData class]]) {
-        NSString *s = [text hasPrefix:@"base64:"]
-            ? [text substringFromIndex:@"base64:".length] : text;
-        // 原来是文本则按文本存，否则按 base64 解析
-        NSString *origStr = [KeychainManager displayStringForValue:origVal];
-        if (![origStr hasPrefix:@"base64:"]) {
-            newVal = [text dataUsingEncoding:NSUTF8StringEncoding] ?: [NSData data];
-        } else {
-            NSData *d = [[NSData alloc] initWithBase64EncodedString:s options:0];
-            if (!d) {
-                [self toast:@"base64 解析失败，未保存"];
-                return;
-            }
-            newVal = d;
-        }
-    } else {
-        newVal = text;
-    }
-    NSError *err = nil;
+// 写回单个字段；成功刷新本页，失败返回错误
+- (BOOL)commitValue:(id)newVal forKey:(NSString *)key error:(NSError **)outError {
     NSDictionary *updated = [KeychainManager saveEntry:self.entry
                                  changedDisplayValues:@{key: newVal}
-                                                error:&err];
-    if (!updated) {
-        [self toast:err.localizedDescription ?: @"保存失败"];
-        return;
-    }
+                                                error:outError];
+    if (!updated) return NO;
     self.entry = updated;
     [self rebuild];
     [self.table reloadData];
-    [self toast:@"已保存"];
+    return YES;
+}
+
+- (void)editKey:(NSString *)key {
+    id origVal = self.display[key];
+    NSString *name = [KeychainManager friendlyNameForKey:key];
+    __weak typeof(self) weakSelf = self;
+
+    // 1) 二进制：按内容格式进全屏编辑器
+    if ([origVal isKindOfClass:[NSData class]]) {
+        NSData *d = (NSData *)origVal;
+        LCDataFormat fmt = [KeychainManager dataFormat:d];
+        BOOL ro = (fmt == LCDataFormatKeyedArchive);
+        NSString *hint = nil;
+        switch (fmt) {
+            case LCDataFormatPlistBinary:
+                hint = @"二进制 plist，已转 XML 显示；保存时自动转回二进制，改错会提示";
+                break;
+            case LCDataFormatPlistXML:
+                hint = @"XML plist，直接改；保存时校验格式";
+                break;
+            case LCDataFormatJSON:
+                hint = @"JSON，直接改；保存时校验格式";
+                break;
+            case LCDataFormatKeyedArchive:
+                hint = @"NSKeyedArchiver 归档，仅支持查看结构（解档需原始类），不可编辑";
+                break;
+            case LCDataFormatBinary:
+                hint = @"不透明二进制，按 base64 编辑";
+                break;
+            case LCDataFormatText:
+            default:
+                hint = @"文本，直接改";
+                break;
+        }
+        NSString *title = [NSString stringWithFormat:@"%@ · %@", name,
+                           [KeychainManager formatName:fmt]];
+        DataEditViewController *e = [[DataEditViewController alloc]
+            initWithTitle:title
+                     hint:hint
+                     text:[KeychainManager editableTextForData:d format:fmt]
+                 readOnly:ro
+                   onSave:^BOOL(NSString *text, NSError **err) {
+                       NSData *nd = [KeychainManager dataFromEditedText:text
+                                                                format:fmt error:err];
+                       if (!nd) return NO;
+                       return [weakSelf commitValue:nd forKey:key error:err];
+                   }];
+        [self.navigationController pushViewController:e animated:YES];
+        return;
+    }
+
+    // 2) 数字：数字键盘
+    if ([origVal isKindOfClass:[NSNumber class]]) {
+        UIAlertController *alert = [UIAlertController
+            alertControllerWithTitle:[NSString stringWithFormat:@"编辑 %@", name]
+                             message:@"整数 / 小数 / true / false"
+                      preferredStyle:UIAlertControllerStyleAlert];
+        [alert addTextFieldWithConfigurationHandler:^(UITextField *tf) {
+            tf.text = [(NSNumber *)origVal stringValue];
+            tf.keyboardType = UIKeyboardTypeNumbersAndPunctuation;
+        }];
+        [alert addAction:[UIAlertAction actionWithTitle:@"取消"
+                                                  style:UIAlertActionStyleCancel handler:nil]];
+        [alert addAction:[UIAlertAction actionWithTitle:@"保存"
+                                                  style:UIAlertActionStyleDefault
+                                                handler:^(__unused UIAlertAction *a) {
+            NSString *t = [alert.textFields.firstObject.text
+                stringByTrimmingCharactersInSet:
+                    [NSCharacterSet whitespaceAndNewlineCharacterSet]];
+            NSNumber *num = nil;
+            NSString *low = t.lowercaseString;
+            if ([low isEqualToString:@"true"] || [low isEqualToString:@"yes"]) num = @YES;
+            else if ([low isEqualToString:@"false"] || [low isEqualToString:@"no"]) num = @NO;
+            else if ([t rangeOfString:@"."].location != NSNotFound) {
+                double v = t.doubleValue;
+                num = (v == 0 && ![t isEqualToString:@"0"] && ![t hasPrefix:@"0."])
+                    ? nil : @(v);
+            } else {
+                long long v = t.longLongValue;
+                num = (v == 0 && ![t isEqualToString:@"0"]) ? nil : @(v);
+            }
+            if (!num) {
+                [weakSelf toast:@"数字格式不对，未保存"];
+                return;
+            }
+            NSError *err = nil;
+            if ([weakSelf commitValue:num forKey:key error:&err]) {
+                [weakSelf toast:@"已保存"];
+            } else {
+                [weakSelf toast:err.localizedDescription ?: @"保存失败"];
+            }
+        }]];
+        [self presentViewController:alert animated:YES completion:nil];
+        return;
+    }
+
+    // 3) 字符串：小框直接改
+    UIAlertController *alert = [UIAlertController
+        alertControllerWithTitle:[NSString stringWithFormat:@"编辑 %@", name]
+                         message:nil
+                  preferredStyle:UIAlertControllerStyleAlert];
+    [alert addTextFieldWithConfigurationHandler:^(UITextField *tf) {
+        tf.text = [KeychainManager displayStringForValue:origVal];
+        tf.clearButtonMode = UITextFieldViewModeWhileEditing;
+    }];
+    [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"保存" style:UIAlertActionStyleDefault
+        handler:^(__unused UIAlertAction *a) {
+            NSError *err = nil;
+            NSString *t = alert.textFields.firstObject.text ?: @"";
+            if ([weakSelf commitValue:t forKey:key error:&err]) {
+                [weakSelf toast:@"已保存"];
+            } else {
+                [weakSelf toast:err.localizedDescription ?: @"保存失败"];
+            }
+        }]];
+    [self presentViewController:alert animated:YES completion:nil];
 }
 
 #pragma mark - Delete

@@ -19,6 +19,7 @@
 		A100000000000000000000010 /* BrowseViewController.m in Sources */ = {isa = PBXBuildFile; fileRef = A200000000000000000000015 /* BrowseViewController.m */; };
 		A100000000000000000000011 /* DetailViewController.m in Sources */ = {isa = PBXBuildFile; fileRef = A200000000000000000000017 /* DetailViewController.m */; };
 		A100000000000000000000012 /* CoreGraphics.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A200000000000000000000019 /* CoreGraphics.framework */; };
+		A100000000000000000000013 /* DataEditViewController.m in Sources */ = {isa = PBXBuildFile; fileRef = A200000000000000000000020 /* DataEditViewController.m */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -41,6 +42,8 @@
 		A200000000000000000000017 /* DetailViewController.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = DetailViewController.m; sourceTree = "<group>"; };
 		A200000000000000000000018 /* DetailViewController.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = DetailViewController.h; sourceTree = "<group>"; };
 		A200000000000000000000019 /* CoreGraphics.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreGraphics.framework; path = System/Library/Frameworks/CoreGraphics.framework; sourceTree = SDKROOT; };
+		A200000000000000000000020 /* DataEditViewController.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = DataEditViewController.m; sourceTree = "<group>"; };
+		A200000000000000000000021 /* DataEditViewController.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = DataEditViewController.h; sourceTree = "<group>"; };
 		A300000000000000000000001 /* LCKeychainBackup.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = LCKeychainBackup.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -75,6 +78,8 @@
 				A200000000000000000000016 /* BrowseViewController.h */,
 				A200000000000000000000017 /* DetailViewController.m */,
 				A200000000000000000000018 /* DetailViewController.h */,
+				A200000000000000000000020 /* DataEditViewController.m */,
+				A200000000000000000000021 /* DataEditViewController.h */,
 				A200000000000000000000002 /* AppDelegate.m */,
 				A200000000000000000000003 /* AppDelegate.h */,
 				A200000000000000000000004 /* SceneDelegate.m */,
@@ -159,6 +164,7 @@
 				A100000000000000000000005 /* KeychainManager.m in Sources */,
 				A100000000000000000000010 /* BrowseViewController.m in Sources */,
 				A100000000000000000000011 /* DetailViewController.m in Sources */,
+				A100000000000000000000013 /* DataEditViewController.m in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

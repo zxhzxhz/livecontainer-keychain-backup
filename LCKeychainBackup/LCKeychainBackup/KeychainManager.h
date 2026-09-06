@@ -62,6 +62,33 @@ NS_ASSUME_NONNULL_BEGIN
 /// 单条删除
 + (BOOL)deleteEntry:(NSDictionary *)entry error:(NSError **)outError;
 
+#pragma mark - 数据内容识别（v_Data 这类二进制的查看/编辑）
+
+typedef NS_ENUM(NSInteger, LCDataFormat) {
+    LCDataFormatText,         // UTF-8 文本
+    LCDataFormatJSON,         // JSON 文本
+    LCDataFormatPlistBinary,  // 二进制 plist（bplist）
+    LCDataFormatPlistXML,     // XML plist
+    LCDataFormatKeyedArchive, // NSKeyedArchiver（仅查看）
+    LCDataFormatBinary,       // 不透明二进制（base64 编辑）
+};
+
+/// 识别 NSData 的内容格式
++ (LCDataFormat)dataFormat:(NSData *)data;
++ (NSString *)formatName:(LCDataFormat)fmt;
+/// plist 解析（bplist / XML 通吃）
++ (nullable id)plistObjectFromData:(NSData *)data error:(NSError **)outError;
+/// 详情页预览，如 [Plist·二进制] {k1, k2} / [JSON] {...} / [文本] xxx
++ (NSString *)previewForData:(NSData *)data;
+/// 按格式生成可编辑文本：文本原文 / JSON 排版 / plist 转 XML / 二进制转 base64
++ (NSString *)editableTextForData:(NSData *)data format:(LCDataFormat)fmt;
+/// 把编辑后的文本转回 NSData（保持原序列化格式）；KeyedArchive 返回 nil
++ (nullable NSData *)dataFromEditedText:(NSString *)text
+                                    format:(LCDataFormat)fmt
+                                     error:(NSError **)outError;
+/// KeyedArchive 的可读结构转储（类清单 + 能解则解）
++ (NSString *)decodedDumpForArchiveData:(NSData *)data;
+
 @end
 
 NS_ASSUME_NONNULL_END

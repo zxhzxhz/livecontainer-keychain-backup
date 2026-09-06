@@ -516,7 +516,9 @@ static BOOL LCDeleteEncodedEntry(NSDictionary *encodedEntry) {
     id raw = entry[key];
     if ([raw isKindOfClass:[NSDictionary class]] && raw[kDropMarker]) return NO;
     id disp = [self displayDictionaryForEntry:entry][key];
-    return [disp isKindOfClass:[NSString class]] || [disp isKindOfClass:[NSData class]];
+    return [disp isKindOfClass:[NSString class]] ||
+           [disp isKindOfClass:[NSData class]] ||
+           [disp isKindOfClass:[NSNumber class]];
 }
 
 + (NSString *)friendlyNameForKey:(NSString *)key {
@@ -542,10 +544,7 @@ static BOOL LCDeleteEncodedEntry(NSDictionary *encodedEntry) {
 + (NSString *)displayStringForValue:(id)value {
     if ([value isKindOfClass:[NSString class]]) return value;
     if ([value isKindOfClass:[NSData class]]) {
-        NSData *d = (NSData *)value;
-        NSString *s = [[NSString alloc] initWithData:d encoding:NSUTF8StringEncoding];
-        if (s && [s rangeOfString:@"\0"].location == NSNotFound) return s;
-        return [@"base64:" stringByAppendingString:[d base64EncodedStringWithOptions:0]];
+        return [self previewForData:(NSData *)value];
     }
     if ([value isKindOfClass:[NSDate class]]) {
         return [NSDateFormatter localizedStringFromDate:value
@@ -619,6 +618,227 @@ static BOOL LCDeleteEncodedEntry(NSDictionary *encodedEntry) {
             userInfo:@{NSLocalizedDescriptionKey: @"删除失败"}];
     }
     return NO;
+}
+
+#pragma mark - 数据内容识别
+
+static NSString *LCShorten(NSString *s, NSUInteger maxLen) {
+    if (!s) return @"";
+    if (s.length <= maxLen) return s;
+    return [[s substringToIndex:maxLen] stringByAppendingString:@"…"];
+}
+
++ (nullable id)plistObjectFromData:(NSData *)data error:(NSError **)outError {
+    if (!data) return nil;
+    return [NSPropertyListSerialization propertyListWithData:data
+                                                     options:NSPropertyListImmutable
+                                                      format:NULL
+                                                       error:outError];
+}
+
++ (LCDataFormat)dataFormat:(NSData *)data {
+    if (!data || data.length == 0) return LCDataFormatText;
+    // bplist 魔数
+    if (data.length >= 6 && memcmp(data.bytes, "bplist", 6) == 0) {
+        id obj = [self plistObjectFromData:data error:NULL];
+        if ([obj isKindOfClass:[NSDictionary class]]) {
+            id arch = ((NSDictionary *)obj)[@"$archiver"];
+            if ([arch isKindOfClass:[NSString class]] &&
+                [(NSString *)arch containsString:@"NSKeyedArchiver"]) {
+                return LCDataFormatKeyedArchive;
+            }
+            return LCDataFormatPlistBinary;
+        }
+        return LCDataFormatBinary;
+    }
+    NSString *s = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+    if (!s) return LCDataFormatBinary;
+    NSCharacterSet *ws = [NSCharacterSet whitespaceAndNewlineCharacterSet];
+    NSUInteger i = 0;
+    while (i < s.length && [ws characterIsMember:[s characterAtIndex:i]]) i++;
+    NSString *rest = i < s.length ? [s substringFromIndex:i] : @"";
+    if ([rest hasPrefix:@"<plist"] || [rest hasPrefix:@"<?xml"]) {
+        if ([self plistObjectFromData:data error:NULL]) return LCDataFormatPlistXML;
+        return LCDataFormatText;
+    }
+    if ([rest hasPrefix:@"{"] || [rest hasPrefix:@"["]) {
+        if ([NSJSONSerialization JSONObjectWithData:data options:0 error:NULL]) {
+            return LCDataFormatJSON;
+        }
+    }
+    return LCDataFormatText;
+}
+
++ (NSString *)formatName:(LCDataFormat)fmt {
+    switch (fmt) {
+        case LCDataFormatJSON: return @"JSON";
+        case LCDataFormatPlistBinary: return @"Plist·二进制";
+        case LCDataFormatPlistXML: return @"Plist·XML";
+        case LCDataFormatKeyedArchive: return @"KeyedArchive";
+        case LCDataFormatBinary: return @"二进制";
+        case LCDataFormatText: default: return @"文本";
+    }
+}
+
++ (NSString *)previewForData:(NSData *)data {
+    if (!data || data.length == 0) return @"[空]";
+    LCDataFormat fmt = [self dataFormat:data];
+    NSString *tag = [self formatName:fmt];
+    NSString *body = @"";
+    switch (fmt) {
+        case LCDataFormatText: {
+            NSString *s = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+            body = LCShorten(s ?: @"", 120);
+            break;
+        }
+        case LCDataFormatJSON: {
+            id obj = [NSJSONSerialization JSONObjectWithData:data options:0 error:NULL];
+            NSData *compact = obj ? [NSJSONSerialization dataWithJSONObject:obj options:0 error:NULL] : nil;
+            NSString *s = compact ? [[NSString alloc] initWithData:compact encoding:NSUTF8StringEncoding] : nil;
+            body = LCShorten(s ?: @"", 120);
+            break;
+        }
+        case LCDataFormatPlistBinary:
+        case LCDataFormatPlistXML: {
+            id obj = [self plistObjectFromData:data error:NULL];
+            if ([obj isKindOfClass:[NSDictionary class]]) {
+                body = [NSString stringWithFormat:@"{%@}",
+                        LCShorten([[(NSDictionary *)obj allKeys] componentsJoinedByString:@", "], 120)];
+            } else if ([obj isKindOfClass:[NSArray class]]) {
+                body = [NSString stringWithFormat:@"[%lu 项]", (unsigned long)[(NSArray *)obj count]];
+            } else {
+                body = LCShorten([obj description] ?: @"", 120);
+            }
+            break;
+        }
+        case LCDataFormatKeyedArchive: {
+            id top = [self plistObjectFromData:data error:NULL];
+            NSArray *objects = [top isKindOfClass:[NSDictionary class]] ? top[@"$objects"] : nil;
+            body = [NSString stringWithFormat:@"%@ · %lu objects",
+                    top[@"$archiver"] ?: @"?",
+                    (unsigned long)[objects isKindOfClass:[NSArray class]] ? [(NSArray *)objects count] : 0];
+            break;
+        }
+        case LCDataFormatBinary:
+        default:
+            body = [NSString stringWithFormat:@"%lu 字节", (unsigned long)data.length];
+            break;
+    }
+    return [NSString stringWithFormat:@"[%@] %@", tag, body];
+}
+
++ (NSString *)editableTextForData:(NSData *)data format:(LCDataFormat)fmt {
+    switch (fmt) {
+        case LCDataFormatJSON: {
+            id obj = [NSJSONSerialization JSONObjectWithData:data options:0 error:NULL];
+            NSData *pretty = obj ? [NSJSONSerialization dataWithJSONObject:obj
+                options:NSJSONWritingPrettyPrinted | NSJSONWritingSortedKeys error:NULL] : nil;
+            NSString *s = pretty ? [[NSString alloc] initWithData:pretty encoding:NSUTF8StringEncoding] : nil;
+            return s ?: [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding] ?: @"";
+        }
+        case LCDataFormatPlistBinary:
+        case LCDataFormatPlistXML: {
+            id obj = [self plistObjectFromData:data error:NULL];
+            NSData *xml = obj ? [NSPropertyListSerialization dataWithPropertyList:obj
+                format:NSPropertyListXMLFormat_v1_0 options:0 error:NULL] : nil;
+            NSString *s = xml ? [[NSString alloc] initWithData:xml encoding:NSUTF8StringEncoding] : nil;
+            return s ?: @"";
+        }
+        case LCDataFormatBinary:
+            return [data base64EncodedStringWithOptions:0];
+        case LCDataFormatKeyedArchive:
+            return [self decodedDumpForArchiveData:data];
+        case LCDataFormatText:
+        default:
+            return [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding] ?: @"";
+    }
+}
+
++ (nullable NSData *)dataFromEditedText:(NSString *)text
+                                    format:(LCDataFormat)fmt
+                                     error:(NSError **)outError {
+    switch (fmt) {
+        case LCDataFormatText:
+            return [text dataUsingEncoding:NSUTF8StringEncoding] ?: [NSData data];
+        case LCDataFormatJSON: {
+            NSData *d = [text dataUsingEncoding:NSUTF8StringEncoding] ?: [NSData data];
+            if ([NSJSONSerialization JSONObjectWithData:d options:0 error:outError]) return d;
+            return nil;
+        }
+        case LCDataFormatPlistBinary:
+        case LCDataFormatPlistXML: {
+            NSData *d = [text dataUsingEncoding:NSUTF8StringEncoding] ?: [NSData data];
+            NSError *e = nil;
+            id obj = [NSPropertyListSerialization propertyListWithData:d
+                options:NSPropertyListImmutable format:NULL error:&e];
+            if (!obj) {
+                if (outError) *outError = e;
+                return nil;
+            }
+            // 保持原序列化格式：二进制的存回二进制，XML 的存回 XML
+            return [NSPropertyListSerialization dataWithPropertyList:obj
+                format:(fmt == LCDataFormatPlistBinary ? NSPropertyListBinaryFormat_v1_0
+                                                       : NSPropertyListXMLFormat_v1_0)
+                options:0 error:outError];
+        }
+        case LCDataFormatBinary: {
+            NSData *d = [[NSData alloc] initWithBase64EncodedString:text
+                options:NSDataBase64DecodingIgnoreUnknownCharacters];
+            if (!d && outError) {
+                *outError = [NSError errorWithDomain:@"LCKeychainBackup" code:-1
+                    userInfo:@{NSLocalizedDescriptionKey: @"base64 解析失败"}];
+            }
+            return d;
+        }
+        case LCDataFormatKeyedArchive: {
+            if (outError) {
+                *outError = [NSError errorWithDomain:@"LCKeychainBackup" code:-1
+                    userInfo:@{NSLocalizedDescriptionKey: @"KeyedArchive 仅支持查看，不可编辑"}];
+            }
+            return nil;
+        }
+    }
+}
+
++ (NSString *)decodedDumpForArchiveData:(NSData *)data {
+    NSMutableString *out = [NSMutableString string];
+    id top = [self plistObjectFromData:data error:NULL];
+    if (![top isKindOfClass:[NSDictionary class]]) return @"无法解析（非 plist 容器）";
+    NSDictionary *td = (NSDictionary *)top;
+    NSArray *objects = [td[@"$objects"] isKindOfClass:[NSArray class]] ? td[@"$objects"] : @[];
+    [out appendFormat:@"$archiver: %@\n$objects: %lu\n", td[@"$archiver"] ?: @"?",
+            (unsigned long)objects.count];
+    [out appendFormat:@"$top: %@\n", td[@"$top"] ?: @"?"];
+    // 类名清单
+    NSMutableArray *seen = [NSMutableArray array];
+    for (id o in objects) {
+        if (![o isKindOfClass:[NSDictionary class]]) continue;
+        NSString *cn = o[@"$classname"];
+        if ([cn isKindOfClass:[NSString class]] && ![seen containsObject:cn]) {
+            [seen addObject:cn];
+            if (seen.count >= 30) break;
+        }
+    }
+    [out appendFormat:@"类(%lu): %@\n", (unsigned long)seen.count,
+            [seen componentsJoinedByString:@", "]];
+    // 能解则解（仅常见 Foundation 类）
+    @try {
+        NSError *ue = nil;
+        NSSet *classes = [NSSet setWithObjects:
+            [NSDictionary class], [NSArray class], [NSString class],
+            [NSNumber class], [NSDate class], [NSData class], [NSSet class], nil];
+        id root = [NSKeyedUnarchiver unarchivedObjectOfClasses:classes
+                                                       fromData:data error:&ue];
+        if (root) {
+            [out appendString:@"\n—— 解档成功 ——\n"];
+            [out appendString:LCShorten([root description], 3000)];
+        } else {
+            [out appendString:@"\n（含自定义类，无法完整解档，仅显示结构）"];
+        }
+    } @catch (NSException *ex) {
+        [out appendFormat:@"\n（解档异常 %@，仅显示结构）", ex.name];
+    }
+    return out;
 }
 
 @end
