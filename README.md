@@ -17,13 +17,29 @@
 2. **先导出、确认 JSON 非空并拷贝出手机，再重装。**
    建议 AirDrop / 文件 App / 分享面板多存几份。
 
-## 功能（Phase 1 极简）
+## 功能
 
-- 基础 UI：状态 + 日志 + 三个按钮
+### Phase 1（已完成）：备份 / 恢复
+
+- 基础 UI：状态 + 日志 + 按钮
 - **导出**：遍历 5 类 `kSecClass`（genp/inet/cert/keys/idnt），
-  `SecItemCopyMatching` 全量查询 → `Documents/keychain_backup_<时间戳>.json`
-- **导入**：从文件选择 JSON → `SecItemDelete + SecItemAdd` 幂等恢复
+  `SecItemCopyMatching` 全量查询 → `Documents/keychain_backup_<时间戳>.plist`
+- **导入**：从文件选择备份（.plist 新格式 / .json 旧格式兼容）→
+  `SecItemDelete + SecItemAdd` 幂等恢复
 - **分享**：把最近一次备份通过 `UIActivityViewController` 发到文件 App / AirDrop
+
+### Phase 2（当前）：浏览 / 编辑 + plist 格式
+
+- 备份文件改为 **plist（XML）**：`NSDate` / `NSData` 原生支持；
+  根结构 `{format, version: 2, exported_at, item_count, items}`，旧 JSON 照样能导
+- **浏览**：按 GenericPassword / InternetPassword / Certificate / Key / Identity
+  分组列表，标题为 account/label，副标题为 class · service · 数据长度，带搜索
+- **详情**：全部属性 key-value 展示，点一行可复制值
+- **编辑**：字符串直接改；`v_Data` 文本按文本存、二进制按 base64 存；
+  写回走“按原条目删 + 写新”（定位键被改也不怕），失败自动回滚原条目
+- **删除**：单条删除（二次确认）
+- 只读保护：`_orig_class/class/cdat/mdat/crtr/v_Ref/持久化引用/accc`
+  及不可序列化字段不可编；identity 整类不可直接 Add（它是 cert+key 派生视图）
 
 ## 安装到 LiveContainer
 

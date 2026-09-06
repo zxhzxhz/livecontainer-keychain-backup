@@ -1,4 +1,5 @@
 #import "ViewController.h"
+#import "BrowseViewController.h"
 #import "KeychainManager.h"
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 
@@ -9,6 +10,7 @@
 @property (nonatomic, strong) UIButton *exportBtn;
 @property (nonatomic, strong) UIButton *importBtn;
 @property (nonatomic, strong) UIButton *shareBtn;
+@property (nonatomic, strong) UIButton *browseBtn;
 @property (nonatomic, strong, nullable) NSURL *lastBackupURL;
 @end
 
@@ -50,9 +52,10 @@
     self.statusLabel.numberOfLines = 0;
     self.statusLabel.translatesAutoresizingMaskIntoConstraints = NO;
 
-    self.exportBtn = [self makeButton:@"1. 导出 Keychain → JSON" action:@selector(onExport)];
-    self.importBtn = [self makeButton:@"2. 从 JSON 导入恢复" action:@selector(onImport)];
+    self.exportBtn = [self makeButton:@"1. 导出 Keychain → plist" action:@selector(onExport)];
+    self.importBtn = [self makeButton:@"2. 从备份导入恢复" action:@selector(onImport)];
     self.shareBtn  = [self makeButton:@"3. 分享备份文件" action:@selector(onShare)];
+    self.browseBtn = [self makeButton:@"4. 浏览 / 编辑 Keychain" action:@selector(onBrowse)];
 
     self.logView = [[UITextView alloc] init];
     self.logView.editable = NO;
@@ -63,7 +66,7 @@
 
     UIStackView *stack = [[UIStackView alloc] initWithArrangedSubviews:@[
         self.titleLabel, self.statusLabel,
-        self.exportBtn, self.importBtn, self.shareBtn, self.logView,
+        self.exportBtn, self.importBtn, self.shareBtn, self.browseBtn, self.logView,
     ]];
     stack.axis = UILayoutConstraintAxisVertical;
     stack.spacing = 12;
@@ -103,49 +106,33 @@
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         NSError *err = nil;
         NSArray *items = [KeychainManager dumpAllItems:&err];
-        NSError *jsonErr = nil;
-        NSData *json = nil;
+        NSError *plistErr = nil;
+        NSData *plist = nil;
         @try {
-            // 先定位坏条目：逐个校验，坏的只记日志、不拖垮整批
-            if (![NSJSONSerialization isValidJSONObject:items]) {
-                NSMutableArray *clean = [NSMutableArray arrayWithCapacity:items.count];
-                for (NSUInteger i = 0; i < items.count; i++) {
-                    id e = items[i];
-                    if ([NSJSONSerialization isValidJSONObject:@[e]]) {
-                        [clean addObject:e];
-                    } else {
-                        NSLog(@"[LCKeychainBackup] 跳过不可序列化条目 #%lu: %@",
-                              (unsigned long)i, e);
-                    }
-                }
-                items = clean;
-            }
-            json = [NSJSONSerialization dataWithJSONObject:items
-                                                   options:NSJSONWritingPrettyPrinted
-                                                     error:&jsonErr];
+            plist = [KeychainManager backupPlistWithItems:items error:&plistErr];
         } @catch (NSException *ex) {
-            jsonErr = [NSError errorWithDomain:@"LCKeychainBackup" code:-1
+            plistErr = [NSError errorWithDomain:@"LCKeychainBackup" code:-1
                 userInfo:@{NSLocalizedDescriptionKey:
-                    [NSString stringWithFormat:@"JSON 序列化异常 %@: %@", ex.name, ex.reason]}];
+                    [NSString stringWithFormat:@"plist 序列化异常 %@: %@", ex.name, ex.reason]}];
         }
         dispatch_async(dispatch_get_main_queue(), ^{
-            if (!json) {
+            if (!plist) {
                 NSString *m = [NSString stringWithFormat:@"导出失败: %@",
-                               jsonErr ?: err ?: @"未知错误"];
+                               plistErr ?: err ?: @"未知错误"];
                 self.statusLabel.text = m;
                 [self log:m];
                 return;
             }
             NSDateFormatter *df = [[NSDateFormatter alloc] init];
             df.dateFormat = @"yyyyMMdd_HHmmss";
-            NSString *name = [NSString stringWithFormat:@"keychain_backup_%@.json",
+            NSString *name = [NSString stringWithFormat:@"keychain_backup_%@.plist",
                               [df stringFromDate:[NSDate date]]];
             NSURL *docs = [[[NSFileManager defaultManager]
                 URLsForDirectory:NSDocumentDirectory
                               inDomains:NSUserDomainMask] firstObject];
             NSURL *url = [docs URLByAppendingPathComponent:name];
             NSError *werr = nil;
-            [json writeToURL:url options:NSDataWritingAtomic error:&werr];
+            [plist writeToURL:url options:NSDataWritingAtomic error:&werr];
             if (werr) {
                 self.statusLabel.text = werr.localizedDescription;
                 [self log:[@"写入失败: " stringByAppendingString:werr.localizedDescription]];
@@ -176,14 +163,22 @@
 
 #pragma mark - Import
 
+- (void)onBrowse {
+    BrowseViewController *b = [[BrowseViewController alloc] init];
+    UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:b];
+    nav.modalPresentationStyle = UIModalPresentationFullScreen;
+    [self presentViewController:nav animated:YES completion:nil];
+}
+
 - (void)onImport {
-    UTType *jsonType = UTTypeJSON;
+    // plist（新）+ JSON（旧）都可导入
     UIDocumentPickerViewController *picker =
-        [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:@[jsonType]];
+        [[UIDocumentPickerViewController alloc]
+            initForOpeningContentTypes:@[UTTypePropertyList, UTTypeJSON]];
     picker.delegate = self;
     picker.allowsMultipleSelection = NO;
     [self presentViewController:picker animated:YES completion:nil];
-    [self log:@"请选择之前导出的 keychain_backup_*.json"];
+    [self log:@"请选择备份文件 keychain_backup_*（.plist / 旧 .json 均可）"];
 }
 
 - (void)documentPicker:(UIDocumentPickerViewController *)controller
@@ -200,11 +195,11 @@
         self.statusLabel.text = @"读取文件失败";
         return;
     }
-    NSError *jerr = nil;
-    id obj = [NSJSONSerialization JSONObjectWithData:data options:0 error:&jerr];
-    if (![obj isKindOfClass:[NSArray class]]) {
-        NSString *m = [NSString stringWithFormat:@"JSON 解析失败: %@",
-                       jerr.localizedDescription ?: @"顶层不是数组"];
+    NSError *perr = nil;
+    NSArray *obj = [KeychainManager itemsFromBackupData:data error:&perr];
+    if (!obj) {
+        NSString *m = [NSString stringWithFormat:@"备份解析失败: %@",
+                       perr.localizedDescription ?: @"未知格式"];
         [self log:m];
         self.statusLabel.text = m;
         return;
@@ -239,7 +234,8 @@
                                options:0 error:nil];
         NSURL *latest = nil; NSDate *latestDate = nil;
         for (NSURL *f in files) {
-            if (![f.pathExtension isEqualToString:@"json"]) continue;
+            NSString *ext = f.pathExtension.lowercaseString;
+            if (![ext isEqualToString:@"plist"] && ![ext isEqualToString:@"json"]) continue;
             if (![f.lastPathComponent hasPrefix:@"keychain_backup_"]) continue;
             NSDate *d = nil;
             [f getResourceValue:&d forKey:NSURLContentModificationDateKey error:nil];

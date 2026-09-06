@@ -187,9 +187,82 @@ static id LCDecodeValue(id v) {
     return v;
 }
 
+// ---------- 单条定位删除 / 写入（浏览编辑与批量恢复共用） ----------
+
+static NSMutableDictionary *LCDelQueryForEncodedEntry(NSDictionary *encodedEntry) {
+    NSMutableDictionary *del = [NSMutableDictionary dictionary];
+    NSString *secClass = encodedEntry[kOrigClassKey];
+    if (![secClass isKindOfClass:[NSString class]]) return del;
+    del[(__bridge id)kSecClass] = secClass;
+    for (NSString *k in @[
+        (__bridge id)kSecAttrAccount,
+        (__bridge id)kSecAttrService,
+        (__bridge id)kSecAttrServer,
+        (__bridge id)kSecAttrAccessGroup,
+        (__bridge id)kSecAttrLabel,
+        (__bridge id)kSecAttrApplicationTag,
+    ]) {
+        id raw = encodedEntry[k];
+        if (!raw) continue;
+        id val = LCDecodeValue(raw);
+        if (val == LCIgnoredValue()) continue;
+        if ([val isKindOfClass:[NSString class]] ||
+            [val isKindOfClass:[NSData class]] ||
+            [val isKindOfClass:[NSNumber class]] ||
+            [val isKindOfClass:[NSDate class]]) {
+            del[k] = val;
+        }
+    }
+    return del;
+}
+
+static OSStatus LCAddEncodedEntry(NSDictionary *encodedEntry) {
+    NSString *secClass = encodedEntry[kOrigClassKey];
+    if (![secClass isKindOfClass:[NSString class]]) return errSecParam;
+    if ([secClass isEqual:(__bridge id)kSecClassIdentity]) return errSecParam; // 派生视图不可 Add
+    NSMutableDictionary *query = [NSMutableDictionary dictionary];
+    for (id k in encodedEntry) {
+        if ([k isEqual:kOrigClassKey]) continue;
+        if (![k isKindOfClass:[NSString class]]) continue;
+        id val = LCDecodeValue(encodedEntry[k]);
+        if (val == LCIgnoredValue()) continue;
+        query[k] = val;
+    }
+    for (NSString *sk in @[
+        (__bridge id)kSecAttrCreationDate,
+        (__bridge id)kSecAttrModificationDate,
+        (__bridge id)kSecValueRef,
+        (__bridge id)kSecValuePersistentRef,
+    ]) {
+        [query removeObjectForKey:sk];
+    }
+    if (query[@"v_Data_Base64"]) { // 兼容极早期残留键
+        query[(__bridge id)kSecValueData] =
+            [[NSData alloc] initWithBase64EncodedString:query[@"v_Data_Base64"] options:0];
+        [query removeObjectForKey:@"v_Data_Base64"];
+    }
+    query[(__bridge id)kSecClass] = secClass;
+    if (!query[(__bridge id)kSecValueData] &&
+        [secClass isEqual:(__bridge id)kSecClassKey]) {
+        return errSecParam; // 无载荷 key（不可导出）无法重建
+    }
+    SecAddFn origAdd = LCOrigAdd();
+    return origAdd ? origAdd((__bridge CFDictionaryRef)query, NULL)
+                   : SecItemAdd((__bridge CFDictionaryRef)query, NULL);
+}
+
+static BOOL LCDeleteEncodedEntry(NSDictionary *encodedEntry) {
+    NSMutableDictionary *del = LCDelQueryForEncodedEntry(encodedEntry);
+    if (!del[(__bridge id)kSecClass]) return NO;
+    SecDeleteFn origDelete = LCOrigDelete();
+    OSStatus st = origDelete ? origDelete((__bridge CFDictionaryRef)del)
+                             : SecItemDelete((__bridge CFDictionaryRef)del);
+    return st == errSecSuccess || st == errSecItemNotFound;
+}
+
 @implementation KeychainManager
 
-+ (NSArray<NSDictionary *> *)classIDs {
++ (NSArray<NSString *> *)classIDs {
     return @[
         (__bridge id)kSecClassGenericPassword,    // genp
         (__bridge id)kSecClassInternetPassword,   // inet
@@ -357,6 +430,195 @@ static id LCDecodeValue(id v) {
                                         [NSString stringWithFormat:@"全部写入失败，最后错误: %d", (int)lastErr]}];
     }
     return ok;
+}
+
+#pragma mark - 备份容器（plist 为主，兼容旧 JSON）
+
++ (nullable NSData *)backupPlistWithItems:(NSArray<NSDictionary *> *)items
+                                    error:(NSError **)outError {
+    NSDictionary *root = @{
+        @"format": @"LCKeychainBackup",
+        @"version": @2,
+        @"exported_at": [NSDate date],
+        @"item_count": @(items.count),
+        @"items": items ?: @[],
+    };
+    return [NSPropertyListSerialization dataWithPropertyList:root
+                                                      format:NSPropertyListXMLFormat_v1_0
+                                                     options:0
+                                                       error:outError];
+}
+
++ (nullable NSArray<NSDictionary *> *)itemsFromBackupData:(NSData *)data
+                                                    error:(NSError **)outError {
+    // 1) 先试 plist（新格式）
+    NSError *perr = nil;
+    id plist = [NSPropertyListSerialization propertyListWithData:data
+                                                         options:NSPropertyListImmutable
+                                                          format:NULL
+                                                           error:&perr];
+    if (plist) {
+        if ([plist isKindOfClass:[NSDictionary class]]) {
+            id items = ((NSDictionary *)plist)[@"items"];
+            if ([items isKindOfClass:[NSArray class]]) return items;
+        } else if ([plist isKindOfClass:[NSArray class]]) {
+            return plist;
+        }
+    }
+    // 2) 再试 JSON（旧格式）
+    NSError *jerr = nil;
+    id obj = [NSJSONSerialization JSONObjectWithData:data options:0 error:&jerr];
+    if ([obj isKindOfClass:[NSArray class]]) return obj;
+    if ([obj isKindOfClass:[NSDictionary class]]) {
+        id items = ((NSDictionary *)obj)[@"items"];
+        if ([items isKindOfClass:[NSArray class]]) return items;
+    }
+    if (outError) *outError = jerr ?: perr;
+    return nil;
+}
+
+#pragma mark - 浏览 / 编辑
+
++ (NSDictionary *)displayDictionaryForEntry:(NSDictionary *)entry {
+    NSMutableDictionary *d = [NSMutableDictionary dictionary];
+    for (id k in entry) {
+        if (![k isKindOfClass:[NSString class]]) continue;
+        if ([k isEqualToString:kOrigClassKey]) {
+            if (entry[k]) d[k] = entry[k];
+            continue;
+        }
+        id val = LCDecodeValue(entry[k]);
+        if (val == LCIgnoredValue()) {
+            NSString *info = @"<unavailable>";
+            id raw = entry[k];
+            if ([raw isKindOfClass:[NSDictionary class]] && raw[kDropMarker]) {
+                NSDictionary *m = raw[kDropMarker];
+                info = [NSString stringWithFormat:@"<%@: %@>",
+                        m[@"reason"] ?: @"dropped", m[@"class"] ?: @"?"];
+            }
+            d[k] = info;
+        } else {
+            d[k] = val;
+        }
+    }
+    return d;
+}
+
++ (BOOL)isKeyEditable:(NSString *)key inEntry:(NSDictionary *)entry {
+    static NSSet *readOnly = nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        readOnly = [NSSet setWithObjects:
+            kOrigClassKey, @"class", @"cdat", @"mdat", @"crtr",
+            @"v_Ref", @"v_PersistentRef", @"accc", nil];
+    });
+    if ([readOnly containsObject:key]) return NO;
+    id raw = entry[key];
+    if ([raw isKindOfClass:[NSDictionary class]] && raw[kDropMarker]) return NO;
+    id disp = [self displayDictionaryForEntry:entry][key];
+    return [disp isKindOfClass:[NSString class]] || [disp isKindOfClass:[NSData class]];
+}
+
++ (NSString *)friendlyNameForKey:(NSString *)key {
+    static NSDictionary *m = nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        m = @{
+            @"acct": @"Account", @"svce": @"Service", @"srvr": @"Server",
+            @"port": @"Port", @"ptcl": @"Protocol", @"labl": @"Label",
+            @"desc": @"Description", @"alis": @"Alias", @"subj": @"Subject",
+            @"agrp": @"AccessGroup", @"pdmn": @"Accessible",
+            @"v_Data": @"Data", @"v_Ref": @"Reference",
+            @"v_PersistentRef": @"PersistentRef", @"accc": @"AccessControl",
+            @"cdat": @"Created", @"mdat": @"Modified", @"crtr": @"Creator",
+            @"type": @"Type", @"atag": @"ApplicationTag",
+            @"class": @"Class", @"path": @"Path",
+        };
+    });
+    NSString *name = m[key];
+    return name ? [NSString stringWithFormat:@"%@ (%@)", name, key] : key;
+}
+
++ (NSString *)displayStringForValue:(id)value {
+    if ([value isKindOfClass:[NSString class]]) return value;
+    if ([value isKindOfClass:[NSData class]]) {
+        NSData *d = (NSData *)value;
+        NSString *s = [[NSString alloc] initWithData:d encoding:NSUTF8StringEncoding];
+        if (s && [s rangeOfString:@"\0"].location == NSNotFound) return s;
+        return [@"base64:" stringByAppendingString:[d base64EncodedStringWithOptions:0]];
+    }
+    if ([value isKindOfClass:[NSDate class]]) {
+        return [NSDateFormatter localizedStringFromDate:value
+                                             dateStyle:NSDateFormatterMediumStyle
+                                             timeStyle:NSDateFormatterMediumStyle];
+    }
+    if ([value isKindOfClass:[NSNumber class]]) return [(NSNumber *)value stringValue];
+    if (value == (id)LCIgnoredValue()) return @"<unavailable>";
+    return [value description] ?: @"?";
+}
+
++ (NSString *)summaryForEntry:(NSDictionary *)entry {
+    NSDictionary *d = [self displayDictionaryForEntry:entry];
+    for (NSString *k in @[@"acct", @"labl", @"svce", @"srvr", @"alis"]) {
+        id v = d[k];
+        if ([v isKindOfClass:[NSString class]] && [(NSString *)v length]) return v;
+        if ([v isKindOfClass:[NSData class]]) {
+            NSString *s = [[NSString alloc] initWithData:v encoding:NSUTF8StringEncoding];
+            if (s.length) return s;
+        }
+    }
+    return [NSString stringWithFormat:@"<%@>",
+            [self displayNameForClass:entry[kOrigClassKey] ?: @"?"]];
+}
+
++ (NSString *)subtitleForEntry:(NSDictionary *)entry {
+    NSMutableArray *parts = [NSMutableArray array];
+    [parts addObject:[self displayNameForClass:entry[kOrigClassKey] ?: @"?"]];
+    NSDictionary *d = [self displayDictionaryForEntry:entry];
+    NSString *summary = [self summaryForEntry:entry];
+    for (NSString *k in @[@"svce", @"srvr", @"agrp"]) {
+        id v = d[k];
+        if ([v isKindOfClass:[NSString class]] && [(NSString *)v length] &&
+            ![(NSString *)v isEqualToString:summary]) {
+            [parts addObject:v];
+            break;
+        }
+    }
+    id data = d[(__bridge id)kSecValueData];
+    if ([data isKindOfClass:[NSData class]]) {
+        [parts addObject:[NSString stringWithFormat:@"%luB", (unsigned long)[(NSData *)data length]]];
+    }
+    return [parts componentsJoinedByString:@" · "];
+}
+
++ (nullable NSDictionary *)saveEntry:(NSDictionary *)orig
+               changedDisplayValues:(NSDictionary<NSString *, id> *)changed
+                              error:(NSError **)outError {
+    NSMutableDictionary *newEntry = [orig mutableCopy];
+    for (NSString *k in changed) {
+        if ([k isEqualToString:kOrigClassKey]) continue;
+        newEntry[k] = LCEncodeValue(changed[k]);
+    }
+    LCDeleteEncodedEntry(orig); // 定位键可能被改：按原条目删
+    OSStatus st = LCAddEncodedEntry(newEntry);
+    if (st == errSecSuccess) return newEntry;
+    // 回滚：尝试把原条目写回去，避免改坏丢数据
+    LCAddEncodedEntry(orig);
+    if (outError) {
+        *outError = [NSError errorWithDomain:@"LCKeychainBackup" code:st
+            userInfo:@{NSLocalizedDescriptionKey:
+                [NSString stringWithFormat:@"写入失败 (%d)，已尝试恢复原条目", (int)st]}];
+    }
+    return nil;
+}
+
++ (BOOL)deleteEntry:(NSDictionary *)entry error:(NSError **)outError {
+    if (LCDeleteEncodedEntry(entry)) return YES;
+    if (outError) {
+        *outError = [NSError errorWithDomain:@"LCKeychainBackup" code:-1
+            userInfo:@{NSLocalizedDescriptionKey: @"删除失败"}];
+    }
+    return NO;
 }
 
 @end
