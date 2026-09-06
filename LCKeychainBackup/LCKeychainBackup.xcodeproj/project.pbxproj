@@ -18,6 +18,7 @@
 		A100000000000000000000009 /* UniformTypeIdentifiers.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A200000000000000000000014 /* UniformTypeIdentifiers.framework */; };
 		A100000000000000000000010 /* BrowseViewController.m in Sources */ = {isa = PBXBuildFile; fileRef = A200000000000000000000015 /* BrowseViewController.m */; };
 		A100000000000000000000011 /* DetailViewController.m in Sources */ = {isa = PBXBuildFile; fileRef = A200000000000000000000017 /* DetailViewController.m */; };
+		A100000000000000000000012 /* CoreGraphics.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A200000000000000000000019 /* CoreGraphics.framework */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -39,6 +40,7 @@
 		A200000000000000000000016 /* BrowseViewController.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = BrowseViewController.h; sourceTree = "<group>"; };
 		A200000000000000000000017 /* DetailViewController.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = DetailViewController.m; sourceTree = "<group>"; };
 		A200000000000000000000018 /* DetailViewController.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = DetailViewController.h; sourceTree = "<group>"; };
+		A200000000000000000000019 /* CoreGraphics.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreGraphics.framework; path = System/Library/Frameworks/CoreGraphics.framework; sourceTree = SDKROOT; };
 		A300000000000000000000001 /* LCKeychainBackup.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = LCKeychainBackup.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -51,6 +53,7 @@
 				A100000000000000000000007 /* UIKit.framework in Frameworks */,
 				A100000000000000000000008 /* Foundation.framework in Frameworks */,
 				A100000000000000000000009 /* UniformTypeIdentifiers.framework in Frameworks */,
+				A100000000000000000000012 /* CoreGraphics.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
