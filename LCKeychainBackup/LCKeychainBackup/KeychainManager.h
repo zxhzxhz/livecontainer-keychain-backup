@@ -20,6 +20,9 @@ NS_ASSUME_NONNULL_BEGIN
 /// 供 UI 展示的类名映射
 + (NSString *)displayNameForClass:(NSString *)secClass;
 
+/// 5 类 kSecClass 的固定顺序（genp/inet/cert/keys/idnt），用于分组展示
++ (NSArray<NSString *> *)classIDs;
+
 #pragma mark - 备份容器（plist 为主，兼容旧 JSON）
 
 /// 打包为 plist（XML）备份文件数据：{version, exported_at, items}
