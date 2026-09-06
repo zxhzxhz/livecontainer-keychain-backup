@@ -9,10 +9,13 @@
 /* Begin PBXBuildFile section */
 		A100000000000000000000001 /* main.m in Sources */ = {isa = PBXBuildFile; fileRef = A200000000000000000000001 /* main.m */; };
 		A100000000000000000000002 /* AppDelegate.m in Sources */ = {isa = PBXBuildFile; fileRef = A200000000000000000000002 /* AppDelegate.m */; };
-		A100000000000000000000003 /* SceneDelegate.m in Sources */ = {isa = PBXBuildFile; fileRef = A200000000000000000000003 /* SceneDelegate.m */; };
-		A100000000000000000000004 /* ViewController.m in Sources */ = {isa = PBXBuildFile; fileRef = A200000000000000000000004 /* ViewController.m */; };
-		A100000000000000000000005 /* KeychainManager.m in Sources */ = {isa = PBXBuildFile; fileRef = A200000000000000000000005 /* KeychainManager.m */; };
+		A100000000000000000000003 /* SceneDelegate.m in Sources */ = {isa = PBXBuildFile; fileRef = A200000000000000000000004 /* SceneDelegate.m */; };
+		A100000000000000000000004 /* ViewController.m in Sources */ = {isa = PBXBuildFile; fileRef = A200000000000000000000006 /* ViewController.m */; };
+		A100000000000000000000005 /* KeychainManager.m in Sources */ = {isa = PBXBuildFile; fileRef = A200000000000000000000008 /* KeychainManager.m */; };
 		A100000000000000000000006 /* Security.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A200000000000000000000009 /* Security.framework */; };
+		A100000000000000000000007 /* UIKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A200000000000000000000012 /* UIKit.framework */; };
+		A100000000000000000000008 /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A200000000000000000000013 /* Foundation.framework */; };
+		A100000000000000000000009 /* UniformTypeIdentifiers.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A200000000000000000000014 /* UniformTypeIdentifiers.framework */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -27,6 +30,9 @@
 		A200000000000000000000010 /* KeychainManager.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = KeychainManager.h; sourceTree = "<group>"; };
 		A200000000000000000000009 /* Security.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Security.framework; path = System/Library/Frameworks/Security.framework; sourceTree = SDKROOT; };
 		A200000000000000000000011 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		A200000000000000000000012 /* UIKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = UIKit.framework; path = System/Library/Frameworks/UIKit.framework; sourceTree = SDKROOT; };
+		A200000000000000000000013 /* Foundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Foundation.framework; path = System/Library/Frameworks/Foundation.framework; sourceTree = SDKROOT; };
+		A200000000000000000000014 /* UniformTypeIdentifiers.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = UniformTypeIdentifiers.framework; path = System/Library/Frameworks/UniformTypeIdentifiers.framework; sourceTree = SDKROOT; };
 		A300000000000000000000001 /* LCKeychainBackup.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = LCKeychainBackup.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -36,6 +42,9 @@
 			buildActionMask = 2147483647;
 			files = (
 				A100000000000000000000006 /* Security.framework in Frameworks */,
+				A100000000000000000000007 /* UIKit.framework in Frameworks */,
+				A100000000000000000000008 /* Foundation.framework in Frameworks */,
+				A100000000000000000000009 /* UniformTypeIdentifiers.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
