@@ -104,9 +104,30 @@
         NSError *err = nil;
         NSArray *items = [KeychainManager dumpAllItems:&err];
         NSError *jsonErr = nil;
-        NSData *json = [NSJSONSerialization dataWithJSONObject:items
-                                                       options:NSJSONWritingPrettyPrinted
-                                                         error:&jsonErr];
+        NSData *json = nil;
+        @try {
+            // 先定位坏条目：逐个校验，坏的只记日志、不拖垮整批
+            if (![NSJSONSerialization isValidJSONObject:items]) {
+                NSMutableArray *clean = [NSMutableArray arrayWithCapacity:items.count];
+                for (NSUInteger i = 0; i < items.count; i++) {
+                    id e = items[i];
+                    if ([NSJSONSerialization isValidJSONObject:@[e]]) {
+                        [clean addObject:e];
+                    } else {
+                        NSLog(@"[LCKeychainBackup] 跳过不可序列化条目 #%lu: %@",
+                              (unsigned long)i, e);
+                    }
+                }
+                items = clean;
+            }
+            json = [NSJSONSerialization dataWithJSONObject:items
+                                                   options:NSJSONWritingPrettyPrinted
+                                                     error:&jsonErr];
+        } @catch (NSException *ex) {
+            jsonErr = [NSError errorWithDomain:@"LCKeychainBackup" code:-1
+                userInfo:@{NSLocalizedDescriptionKey:
+                    [NSString stringWithFormat:@"JSON 序列化异常 %@: %@", ex.name, ex.reason]}];
+        }
         dispatch_async(dispatch_get_main_queue(), ^{
             if (!json) {
                 NSString *m = [NSString stringWithFormat:@"导出失败: %@",

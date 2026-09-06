@@ -39,13 +39,51 @@ static SecDeleteFn LCOrigDelete(void) {
 }
 
 // ---------- JSON-safe 编解码 ----------
+//
+// Keychain 返回字典里除了 NSString/NSNumber/NSData/NSDate，还可能有：
+//   v_Ref = SecCertificateRef / SecKeyRef / SecIdentityRef（__NSCFType）
+//   accc  = SecAccessControlRef（__NSCFType）
+// 这些都不能进 NSJSONSerialization（会抛 Invalid type in JSON write 并闪退）。
+// 策略：能转字节的转 base64；不能序列化的记 dropped 标记，导入时剔除。
 
 static NSString * const kOrigClassKey = @"_orig_class";
 static NSString * const kDataMarker = @"__data_base64";
 static NSString * const kDateMarker = @"__date_iso";
+static NSString * const kCertMarker = @"__cert_der_base64";
+static NSString * const kKeyMarker  = @"__key_bytes_base64";
+static NSString * const kDropMarker = @"__dropped"; // @{reason, class}
+
+// 导入时剔除标记值的哨兵（指针比较，不会和真实数据冲突）
+static NSObject *LCIgnoredValue(void) {
+    static NSObject *s = nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ s = [[NSObject alloc] init]; });
+    return s;
+}
+
+static NSString *LCSafeDesc(id v) {
+    @try {
+        NSString *d = [v description] ?: @"?";
+        return d.length > 300 ? [d substringToIndex:300] : d;
+    } @catch (NSException *e) {
+        return NSStringFromClass([v class]) ?: @"?";
+    }
+}
+
+static NSDictionary *LCDropped(id v, NSString *reason) {
+    return @{kDropMarker: @{
+        @"reason": reason ?: @"?",
+        @"class": NSStringFromClass([v class]) ?: @"?",
+        @"desc": LCSafeDesc(v),
+    }};
+}
 
 static id LCEncodeValue(id v) {
-    if ([v isKindOfClass:[NSData class]]) {
+    if ([v isKindOfClass:[NSString class]] ||
+        [v isKindOfClass:[NSNumber class]] ||
+        [v isKindOfClass:[NSNull class]]) {
+        return v;
+    } else if ([v isKindOfClass:[NSData class]]) {
         return @{kDataMarker: [(NSData *)v base64EncodedStringWithOptions:0]};
     } else if ([v isKindOfClass:[NSDate class]]) {
         static NSISO8601DateFormatter *f = nil;
@@ -64,20 +102,76 @@ static id LCEncodeValue(id v) {
         }
         return d;
     }
-    return v;
+
+    // ---- 到这里只剩 CF Sec 家族对象（v_Ref / accc 等）----
+    // CFGetTypeID 只能对真正的 CF 对象调用，先用类名做一次放行检查，
+    // 避免对普通 NSObject 越界读取导致闪退；未放行的直接记 dropped。
+    NSString *cn = NSStringFromClass([v class]) ?: @"";
+    BOOL looksCF = [cn hasPrefix:@"__NSCF"] || [cn hasPrefix:@"__Sec"] ||
+                   [cn hasPrefix:@"Sec"];
+    if (looksCF && [v isKindOfClass:[NSObject class]]) {
+        CFTypeRef ref = (__bridge CFTypeRef)v;
+        CFTypeID tid = CFGetTypeID(ref);
+        if (tid == SecCertificateGetTypeID()) {
+            NSData *der = CFBridgingRelease(
+                SecCertificateCopyData((SecCertificateRef)ref));
+            if (der) return @{kCertMarker: [der base64EncodedStringWithOptions:0]};
+            return LCDropped(v, @"certificate has no DER data");
+        }
+        if (tid == SecAccessControlGetTypeID()) {
+            // ACL 含应用身份白名单，不可序列化；导入时用系统默认保护级别
+            return LCDropped(v, @"SecAccessControl cannot be serialized");
+        }
+        if (tid == SecKeyGetTypeID()) {
+            CFErrorRef err = NULL;
+            NSData *bytes = CFBridgingRelease(
+                SecKeyCopyExternalRepresentation((SecKeyRef)ref, &err));
+            if (bytes) return @{kKeyMarker: [bytes base64EncodedStringWithOptions:0]};
+            return LCDropped(v, @"non-extractable key (attributes only)");
+        }
+        if (tid == SecIdentityGetTypeID()) {
+            SecCertificateRef cert = NULL;
+            NSMutableDictionary *m = [NSMutableDictionary dictionary];
+            if (SecIdentityCopyCertificate((SecIdentityRef)ref, &cert) == errSecSuccess && cert) {
+                NSData *der = CFBridgingRelease(SecCertificateCopyData(cert));
+                if (der) m[@"cert_der_base64"] = [der base64EncodedStringWithOptions:0];
+                CFRelease(cert);
+            }
+            SecKeyRef key = NULL;
+            if (SecIdentityCopyPrivateKey((SecIdentityRef)ref, &key) == errSecSuccess && key) {
+                CFErrorRef err = NULL;
+                NSData *bytes = CFBridgingRelease(SecKeyCopyExternalRepresentation(key, &err));
+                if (bytes) m[@"key_bytes_base64"] = [bytes base64EncodedStringWithOptions:0];
+                else m[@"key_nonextractable"] = @YES;
+                CFRelease(key);
+            }
+            // identity 是 cert+key 派生视图，导入时自动重建，这里只留档
+            return LCDropped(v, @"identity is derived from cert+key; informational only");
+        }
+    }
+    return LCDropped(v, @"unsupported type for JSON");
 }
 
 static id LCDecodeValue(id v) {
     if ([v isKindOfClass:[NSDictionary class]]) {
         NSDictionary *d = (NSDictionary *)v;
         if (d[kDataMarker] && d.count == 1) {
-            return [[NSData alloc] initWithBase64EncodedString:d[kDataMarker] options:0] ?: [NSData data];
+            return [[NSData alloc] initWithBase64EncodedString:d[kDataMarker] options:0] ?: LCIgnoredValue();
         }
         if (d[kDateMarker] && d.count == 1) {
             static NSISO8601DateFormatter *f = nil;
             static dispatch_once_t once;
             dispatch_once(&once, ^{ f = [[NSISO8601DateFormatter alloc] init]; });
             return [f dateFromString:d[kDateMarker]] ?: [NSDate date];
+        }
+        if (d[kCertMarker] && d.count == 1) {
+            return [[NSData alloc] initWithBase64EncodedString:d[kCertMarker] options:0] ?: LCIgnoredValue();
+        }
+        if (d[kKeyMarker] && d.count == 1) {
+            return [[NSData alloc] initWithBase64EncodedString:d[kKeyMarker] options:0] ?: LCIgnoredValue();
+        }
+        if (d[kDropMarker]) {
+            return LCIgnoredValue(); // 导入时剔除
         }
         NSMutableDictionary *out = [NSMutableDictionary dictionary];
         for (id k in d) {
@@ -146,7 +240,13 @@ static id LCDecodeValue(id v) {
                 NSMutableDictionary *entry = [NSMutableDictionary dictionary];
                 for (id k in dict) {
                     if (![k isKindOfClass:[NSString class]]) continue;
-                    entry[k] = LCEncodeValue(dict[k]);
+                    @try {
+                        entry[k] = LCEncodeValue(dict[k]);
+                    } @catch (NSException *e) {
+                        // 单个字段绝不能拖垮整批导出
+                        entry[k] = LCDropped(dict[k],
+                            [@"encode exception: " stringByAppendingString:e.reason ?: e.name]);
+                    }
                 }
                 entry[kOrigClassKey] = secClass;
                 [all addObject:entry];
@@ -167,13 +267,17 @@ static id LCDecodeValue(id v) {
                     error:(NSError **)outError {
     SecAddFn origAdd = LCOrigAdd();
     SecDeleteFn origDelete = LCOrigDelete();
-    NSInteger ok = 0;
+    NSInteger ok = 0, skippedIdentity = 0, skippedNoData = 0;
     OSStatus lastErr = errSecSuccess;
 
-    // SecItemAdd 不接受的只读 / 系统维护字段
+    // SecItemAdd 不接受的只读 / 系统维护 / 不可序列化字段
+    NSString *kRefKey = (__bridge id)kSecValueRef;                 // v_Ref
+    NSString *kPersistRefKey = (__bridge id)kSecValuePersistentRef; // v_PersistentRef
     NSArray *stripKeys = @[
         (__bridge id)kSecAttrCreationDate,
         (__bridge id)kSecAttrModificationDate,
+        kRefKey,
+        kPersistRefKey,
     ];
 
     for (NSDictionary *raw in items) {
@@ -181,14 +285,36 @@ static id LCDecodeValue(id v) {
         NSString *secClass = raw[kOrigClassKey];
         if (![secClass isKindOfClass:[NSString class]]) continue;
 
+        // identity 是 cert+key 的派生视图，不可直接 Add；
+        // cert/key 恢复后它会自动重建，这里跳过
+        if ([secClass isEqual:(__bridge id)kSecClassIdentity]) {
+            skippedIdentity++;
+            continue;
+        }
+
         NSMutableDictionary *query = [NSMutableDictionary dictionary];
         for (id k in raw) {
             if ([k isEqual:kOrigClassKey]) continue;
             if (![k isKindOfClass:[NSString class]]) continue;
-            query[k] = LCDecodeValue(raw[k]);
+            id val = LCDecodeValue(raw[k]);
+            if (val != LCIgnoredValue()) query[k] = val;
         }
         for (NSString *sk in stripKeys) [query removeObjectForKey:sk];
+        // 兼容极早期版本残留键（若存在）
+        if (query[@"v_Data_Base64"]) {
+            query[(__bridge id)kSecValueData] =
+                [[NSData alloc] initWithBase64EncodedString:query[@"v_Data_Base64"] options:0];
+            [query removeObjectForKey:@"v_Data_Base64"];
+        }
         query[(__bridge id)kSecClass] = secClass;
+
+        // 无有效载荷（如不可导出的 key 只剩属性）则跳过，避免 errSecParam 刷屏
+        if (!query[(__bridge id)kSecValueData]) {
+            if ([secClass isEqual:(__bridge id)kSecClassKey]) {
+                skippedNoData++;
+                continue;
+            }
+        }
 
         // 幂等：按“唯一定位键”先删后加
         NSMutableDictionary *delQuery = [NSMutableDictionary dictionaryWithDictionary:@{
@@ -218,6 +344,11 @@ static id LCDecodeValue(id v) {
             NSLog(@"[LCKeychainBackup] 写入失败 class=%@ status=%d",
                   [self displayNameForClass:secClass], (int)st);
         }
+    }
+    if ((skippedIdentity > 0 || skippedNoData > 0)) {
+        NSLog(@"[LCKeychainBackup] 跳过 identity %ld 条（派生视图，随 cert/key 重建）, "
+              @"无导出数据的 key %ld 条",
+              (long)skippedIdentity, (long)skippedNoData);
     }
     if (ok == 0 && (NSInteger)items.count > 0 && outError) {
         *outError = [NSError errorWithDomain:@"LCKeychainBackup"
